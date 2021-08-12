@@ -56,10 +56,10 @@ excpetions = (
 )
 
 KEYSPACES = ['config_db_uuid',
-            'useragent',
-            'to_bgp_keyspace',
-            'svc_monitor_keyspace',
-            'dm_keyspace']
+             'useragent',
+             'to_bgp_keyspace',
+             'svc_monitor_keyspace',
+             'dm_keyspace']
 
 
 class LongIntEncoder(json.JSONEncoder):
@@ -97,7 +97,7 @@ class DatabaseExim(object):
             'analytics-discovery-' + self._api_args.cluster_id,
             'vcenter-plugin',
             'vcenter-fabric-manager',
-        ])
+            ])
 
         self._zookeeper = kazoo.client.KazooClient(
             self._api_args.zk_server_ip,
@@ -166,6 +166,10 @@ class DatabaseExim(object):
             "--buffer-size", type=int,
             help="Number of rows fetched at once",
             default=1024)
+        parser.add_argument(
+            "--zk-only", action="store_true",
+            help="Import zookeeper only",
+            default=False)
 
         args_obj, remaining_argv = parser.parse_known_args(args_str.split())
         self._args = args_obj
@@ -177,7 +181,7 @@ class DatabaseExim(object):
         # but none of the tests really need it.
 
         self._api_args = utils.parse_args('-c %s %s'
-            %(self._args.api_conf, ' '.join(remaining_argv)))[0]
+                                          %(self._args.api_conf, ' '.join(remaining_argv)))[0]
         logformat = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
         stdout = logging.StreamHandler(sys.stdout)
         stdout.setFormatter(logformat)
@@ -187,7 +191,7 @@ class DatabaseExim(object):
         if args_obj.import_from is not None and args_obj.export_to is not None:
             raise InvalidArguments(
                 'Both --import-from and --export-to cannot be specified %s' %(
-                args_obj))
+                    args_obj))
 
     def db_import(self):
         if self._args.import_from.endswith('.gz'):
@@ -201,26 +205,27 @@ class DatabaseExim(object):
                 self.import_data = json.loads(f.read())
         logger.info("DB dump file loaded")
 
-        ks_cf_info = dict((ks, dict((c, {}) for c in list(cf.keys())))
-            for ks,cf in list(self.import_data['cassandra'].items()))
-        self.init_cassandra(ks_cf_info)
+        if not self._args.zk_only:
+            ks_cf_info = dict((ks, dict((c, {}) for c in list(cf.keys())))
+                              for ks,cf in list(self.import_data['cassandra'].items()))
+            self.init_cassandra(ks_cf_info)
 
-        # refuse import if db already has data
-        non_empty_errors = []
-        for ks in list(self.import_data['cassandra'].keys()):
-            for cf in list(self.import_data['cassandra'][ks].keys()):
-                if len(list(self._get_cf(cf).get_range(column_count=1))) > 0:
-                    non_empty_errors.append(
-                        'Keyspace %s CF %s already has entries.' %(ks, cf))
+            # refuse import if db already has data
+            non_empty_errors = []
+            for ks in list(self.import_data['cassandra'].keys()):
+                for cf in list(self.import_data['cassandra'][ks].keys()):
+                    if len(list(self._get_cf(cf).get_range(column_count=1))) > 0:
+                        non_empty_errors.append(
+                            'Keyspace %s CF %s already has entries.' %(ks, cf))
 
-        if non_empty_errors:
-            raise CassandraNotEmptyError('\n'.join(non_empty_errors))
+            if non_empty_errors:
+                raise CassandraNotEmptyError('\n'.join(non_empty_errors))
 
         non_empty_errors = []
         existing_zk_dirs = set(
             self._zookeeper.get_children(self._api_args.cluster_id+'/'))
         import_zk_dirs = set([p_v_ts[0].split('/')[1]
-            for p_v_ts in json.loads(self.import_data['zookeeper'] or "[]")])
+                              for p_v_ts in json.loads(self.import_data['zookeeper'] or "[]")])
 
         for non_empty in existing_zk_dirs & import_zk_dirs - self._zk_ignore_list:
             non_empty_errors.append(
@@ -229,14 +234,15 @@ class DatabaseExim(object):
         if non_empty_errors:
             raise ZookeeperNotEmptyError('\n'.join(non_empty_errors))
 
-        # seed cassandra
-        for ks_name in list(self.import_data['cassandra'].keys()):
-            for cf_name in list(self.import_data['cassandra'][ks_name].keys()):
-                cf = self._get_cf(cf_name)
-                for row,cols in list(self.import_data['cassandra'][ks_name][cf_name].items()):
-                    for col_name, col_val_ts in list(cols.items()):
-                        cf.insert(row, {col_name: col_val_ts[0]})
-        logger.info("Cassandra DB restored")
+        if not self._args.zk_only:
+            # seed cassandra
+            for ks_name in list(self.import_data['cassandra'].keys()):
+                for cf_name in list(self.import_data['cassandra'][ks_name].keys()):
+                    cf = self._get_cf(cf_name)
+                    for row,cols in list(self.import_data['cassandra'][ks_name][cf_name].items()):
+                        for col_name, col_val_ts in list(cols.items()):
+                            cf.insert(row, {col_name: col_val_ts[0]})
+            logger.info("Cassandra DB restored")
 
         # seed zookeeper
         for path_value_ts in json.loads(self.import_data['zookeeper'] or "{}"):
